@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.2.0] - 2025-03-06
+
+### Added
+
+- Improved Bluetooth device discovery with retry logic
+- Added exponential backoff between connection attempts
+- Added support for manual device configuration
+- Enhanced error handling for device queries
+- Added comprehensive documentation for troubleshooting
+
+### Fixed
+
+- Fixed miflora library import and TypeScript declarations
+- Resolved Bluetooth connectivity issues with weak signals
+- Fixed moisture sensor reading reliability
+- Improved overall plugin stability
+
 ## [3.1.2] - 2025-03-06
 
 ### Added
