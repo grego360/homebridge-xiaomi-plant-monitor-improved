@@ -1,5 +1,9 @@
 # homebridge-xiaomi-plant-monitor-improved
 
+## Acknowledgments
+
+This plugin is a fork of the original [homebridge-xiaomi-plant-monitor](https://github.com/original-author/homebridge-xiaomi-plant-monitor) with improvements to Bluetooth connectivity, device discovery, and error handling.
+
 [![Build and Test](https://github.com/grego360/homebridge-xiaomi-plant-monitor/actions/workflows/build.yml/badge.svg)](https://github.com/grego360/homebridge-xiaomi-plant-monitor/actions/workflows/build.yml)
 
 This is a [Homebridge](https://github.com/homebridge/homebridge) plugin for exposing
