@@ -5,7 +5,7 @@ import type {
   PlatformAccessory,
   PlatformConfig,
 } from "homebridge";
-import type { MiFloraDevice, PlantAccessory, MiFloraConfig } from "./types.js";
+import type { MiFloraDevice, PlantAccessory, MiFloraConfig, MiFloraData } from "./types.js";
 import miflora from "miflora";
 import debugModule from "debug";
 
@@ -207,7 +207,14 @@ class MifloraPlatform implements DynamicPlatformPlugin {
           );
         }
 
-        this.plants.push({ device, accessory });
+        this.plants.push({
+          device,
+          accessory,
+          lowBatteryThreshold: this.lowBatteryThreshold,
+          displayTemperature: this.displayTemperature,
+          displayLightLevel: this.displayLightLevel,
+          displayFertility: this.displayFertility,
+        });
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
           accessory,
         ]);
@@ -216,7 +223,14 @@ class MifloraPlatform implements DynamicPlatformPlugin {
         const indexToUpdate = this.plants.findIndex(
           (plant) => plant.accessory.displayName === device.address
         );
-        this.plants[indexToUpdate] = { device, accessory: plant.accessory };
+        this.plants[indexToUpdate] = {
+          device,
+          accessory: plant.accessory,
+          lowBatteryThreshold: plant.lowBatteryThreshold,
+          displayTemperature: plant.displayTemperature,
+          displayLightLevel: plant.displayLightLevel,
+          displayFertility: plant.displayFertility,
+        };
       } else {
         this.log.debug(`Plant already exists: ${device.address}`);
       }
@@ -226,6 +240,151 @@ class MifloraPlatform implements DynamicPlatformPlugin {
         `Error adding plant accessory ${device.address}`,
         error
       );
+    }
+  }
+
+  /**
+   * Query plant data with retry logic
+   */
+  private async queryPlantData(plant: PlantAccessory): Promise<MiFloraData> {
+    if (!plant.device) {
+      throw new Error('Device is undefined');
+    }
+
+    let retries = 3;
+    let lastError: Error | null = null;
+    let queryResult: MiFloraData | null = null;
+
+    while (retries > 0 && queryResult === null) {
+      try {
+        this.log.debug(
+          `Attempting to query plant ${plant.accessory.displayName}, attempts remaining: ${retries}`
+        );
+        queryResult = await plant.device.query();
+        break; // Success, exit the retry loop
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        handleError(
+          this.log,
+          `Query attempt failed for ${plant.accessory.displayName}`,
+          lastError,
+          "warn"
+        );
+        retries--;
+        if (retries > 0) {
+          // Wait before retrying (exponential backoff)
+          await new Promise((resolve) =>
+            setTimeout(resolve, (4 - retries) * 2000)
+          );
+        }
+      }
+    }
+
+    if (queryResult === null) {
+      throw (
+        lastError ||
+        new Error("Failed to query device after multiple attempts")
+      );
+    }
+
+    return queryResult;
+  }
+
+  /**
+   * Update accessory services with new plant data
+   */
+  private updateAccessoryServices(plant: PlantAccessory, queryResult: MiFloraData): void {
+    const { firmwareInfo, sensorValues } = queryResult;
+    const { battery, firmware } = firmwareInfo;
+    const { temperature, lux, moisture, fertility } = sensorValues;
+
+    this.log.info(
+      `Plant: ${plant.accessory.displayName} | Battery: ${battery}% | Firmware: ${firmware} | Temperature: ${temperature}°C | Light: ${lux} lux | Moisture: ${moisture}% | Fertility: ${fertility} µS/cm`
+    );
+
+    // Update humidity service (moisture)
+    const humidityService = plant.accessory.getService(
+      this.api.hap.Service.HumiditySensor
+    );
+    if (humidityService) {
+      humidityService.updateCharacteristic(
+        this.api.hap.Characteristic.CurrentRelativeHumidity,
+        moisture
+      );
+      humidityService.updateCharacteristic(
+        this.api.hap.Characteristic.StatusLowBattery,
+        battery < plant.lowBatteryThreshold
+          ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+          : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
+      );
+    }
+
+    // Update battery service
+    const batteryService = plant.accessory.getService(
+      this.api.hap.Service.BatteryService
+    );
+    if (batteryService) {
+      batteryService.updateCharacteristic(
+        this.api.hap.Characteristic.ChargingState,
+        this.api.hap.Characteristic.ChargingState.NOT_CHARGEABLE
+      );
+      batteryService.updateCharacteristic(
+        this.api.hap.Characteristic.BatteryLevel,
+        battery
+      );
+      batteryService.updateCharacteristic(
+        this.api.hap.Characteristic.StatusLowBattery,
+        battery < plant.lowBatteryThreshold
+          ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+          : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
+      );
+    }
+
+    // Update temperature service if enabled
+    if (plant.displayTemperature) {
+      const temperatureService = plant.accessory.getService(
+        this.api.hap.Service.TemperatureSensor
+      );
+      if (temperatureService) {
+        temperatureService.updateCharacteristic(
+          this.api.hap.Characteristic.CurrentTemperature,
+          temperature
+        );
+        temperatureService.updateCharacteristic(
+          this.api.hap.Characteristic.StatusLowBattery,
+          battery < plant.lowBatteryThreshold
+            ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+            : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
+        );
+      }
+    }
+
+    // Update light level service if enabled
+    if (plant.displayLightLevel) {
+      const lightService = plant.accessory.getService(
+        this.api.hap.Service.LightSensor
+      );
+      if (lightService) {
+        lightService.updateCharacteristic(
+          this.api.hap.Characteristic.CurrentAmbientLightLevel,
+          lux
+        );
+        lightService.updateCharacteristic(
+          this.api.hap.Characteristic.StatusLowBattery,
+          battery < plant.lowBatteryThreshold
+            ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+            : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
+        );
+      }
+    }
+
+    // Update fertility data (we don't have a direct HomeKit service for this)
+    // So we log it for now, but in the future could add a custom characteristic
+    if (plant.displayFertility) {
+      this.log.debug(
+        `Plant: ${plant.accessory.displayName} | Fertility: ${fertility} µS/cm`
+      );
+      // Future enhancement: could add a custom characteristic for fertility
     }
   }
 
@@ -246,137 +405,11 @@ class MifloraPlatform implements DynamicPlatformPlugin {
         return;
       }
 
-      // Query the device for updated data with retry logic
-      let retries = 3;
-      let lastError: Error | null = null;
-      let queryResult = null;
+      // Query the device for updated data
+      const queryResult = await this.queryPlantData(plant);
 
-      while (retries > 0 && queryResult === null) {
-        try {
-          this.log.debug(
-            `Attempting to query plant ${plant.accessory.displayName}, attempts remaining: ${retries}`
-          );
-          queryResult = await plant.device.query();
-          break; // Success, exit the retry loop
-        } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error));
-          handleError(
-            this.log,
-            `Query attempt failed for ${plant.accessory.displayName}`,
-            lastError,
-            "warn"
-          );
-          retries--;
-          if (retries > 0) {
-            // Wait before retrying (exponential backoff)
-            await new Promise((resolve) =>
-              setTimeout(resolve, (4 - retries) * 2000)
-            );
-          }
-        }
-      }
-
-      if (queryResult === null) {
-        throw (
-          lastError ||
-          new Error("Failed to query device after multiple attempts")
-        );
-      }
-
-      const { firmwareInfo, sensorValues } = queryResult;
-      const { battery, firmware } = firmwareInfo;
-      const { temperature, lux, moisture, fertility } = sensorValues;
-
-      this.log.info(
-        `Plant: ${plant.accessory.displayName} | Battery: ${battery}% | Firmware: ${firmware} | Temperature: ${temperature}°C | Light: ${lux} lux | Moisture: ${moisture}% | Fertility: ${fertility} µS/cm`
-      );
-
-      // Update humidity service (moisture)
-      const humidityService = plant.accessory.getService(
-        this.api.hap.Service.HumiditySensor
-      );
-      if (humidityService) {
-        humidityService.updateCharacteristic(
-          this.api.hap.Characteristic.CurrentRelativeHumidity,
-          moisture
-        );
-        humidityService.updateCharacteristic(
-          this.api.hap.Characteristic.StatusLowBattery,
-          battery < this.lowBatteryThreshold
-            ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-            : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-        );
-      }
-
-      // Update battery service
-      const batteryService = plant.accessory.getService(
-        this.api.hap.Service.BatteryService
-      );
-      if (batteryService) {
-        batteryService.updateCharacteristic(
-          this.api.hap.Characteristic.ChargingState,
-          this.api.hap.Characteristic.ChargingState.NOT_CHARGEABLE
-        );
-        batteryService.updateCharacteristic(
-          this.api.hap.Characteristic.BatteryLevel,
-          battery
-        );
-        batteryService.updateCharacteristic(
-          this.api.hap.Characteristic.StatusLowBattery,
-          battery < this.lowBatteryThreshold
-            ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-            : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-        );
-      }
-
-      // Update temperature service if enabled
-      if (this.displayTemperature) {
-        const temperatureService = plant.accessory.getService(
-          this.api.hap.Service.TemperatureSensor
-        );
-        if (temperatureService) {
-          temperatureService.updateCharacteristic(
-            this.api.hap.Characteristic.CurrentTemperature,
-            temperature
-          );
-          temperatureService.updateCharacteristic(
-            this.api.hap.Characteristic.StatusLowBattery,
-            battery < this.lowBatteryThreshold
-              ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-              : this.api.hap.Characteristic.StatusLowBattery
-                  .BATTERY_LEVEL_NORMAL
-          );
-        }
-      }
-
-      // Update light level service if enabled
-      if (this.displayLightLevel) {
-        const lightService = plant.accessory.getService(
-          this.api.hap.Service.LightSensor
-        );
-        if (lightService) {
-          lightService.updateCharacteristic(
-            this.api.hap.Characteristic.CurrentAmbientLightLevel,
-            lux
-          );
-          lightService.updateCharacteristic(
-            this.api.hap.Characteristic.StatusLowBattery,
-            battery < this.lowBatteryThreshold
-              ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-              : this.api.hap.Characteristic.StatusLowBattery
-                  .BATTERY_LEVEL_NORMAL
-          );
-        }
-      }
-
-      // Update fertility data (we don't have a direct HomeKit service for this)
-      // So we log it for now, but in the future could add a custom characteristic
-      if (this.displayFertility) {
-        this.log.debug(
-          `Plant: ${plant.accessory.displayName} | Fertility: ${fertility} µS/cm`
-        );
-        // Future enhancement: could add a custom characteristic for fertility
-      }
+      // Update accessory services with new data
+      this.updateAccessoryServices(plant, queryResult);
     } catch (error) {
       handleError(
         this.log,
@@ -391,7 +424,14 @@ class MifloraPlatform implements DynamicPlatformPlugin {
    */
   configureAccessory(accessory: PlatformAccessory): void {
     this.log.info(`Adding cached accessory: ${accessory.displayName}`);
-    this.plants.push({ device: undefined, accessory });
+    this.plants.push({
+      device: undefined,
+      accessory,
+      lowBatteryThreshold: this.lowBatteryThreshold,
+      displayTemperature: this.displayTemperature,
+      displayLightLevel: this.displayLightLevel,
+      displayFertility: this.displayFertility,
+    });
   }
 }
 

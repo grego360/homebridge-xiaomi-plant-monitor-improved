@@ -1,4 +1,4 @@
-import type { API } from 'homebridge';
+import type { API } from "homebridge";
 /**
  * Register the platform with Homebridge
  */

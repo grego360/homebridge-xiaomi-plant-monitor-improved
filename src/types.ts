@@ -21,6 +21,10 @@ export interface MiFloraData {
 export interface PlantAccessory {
   device?: MiFloraDevice;
   accessory: PlatformAccessory;
+  lowBatteryThreshold: number;
+  displayTemperature: boolean;
+  displayLightLevel: boolean;
+  displayFertility: boolean;
 }
 
 export interface DeviceConfig {
