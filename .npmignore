@@ -1,0 +1,28 @@
+# Source files
+src/
+tsconfig.json
+nodemon.json
+.eslintrc.json
+
+# Development files
+.github/
+.git/
+.gitignore
+CONTRIBUTING.md
+
+# Test files
+**/*.test.ts
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db

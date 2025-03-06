@@ -1,18 +1,63 @@
 {
-  "name": "homebridge-xiaomi-plant-monitor",
-  "version": "2.0.14",
-  "description": "",
-  "main": "index.js",
+  "name": "homebridge-xiaomi-plant-monitor-improved",
+  "version": "3.1.2",
+  "description": "Homebridge plugin for Xiaomi Mi Flora plant sensors",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grego360/homebridge-xiaomi-plant-monitor.git"
+  },
+  "homepage": "https://github.com/grego360/homebridge-xiaomi-plant-monitor#readme",
+  "bugs": {
+    "url": "https://github.com/grego360/homebridge-xiaomi-plant-monitor/issues"
+  },
+  "scripts": {
+    "build": "rm -rf ./dist && tsc",
+    "prepublishOnly": "npm run build",
+    "watch": "npm run build && npm link && nodemon",
+    "test": "mocha -r ts-node/register src/**/*.test.ts",
+    "lint": "eslint src/**.ts"
+  },
   "keywords": [
-    "homebridge-plugin"
+    "homebridge-plugin",
+    "homebridge",
+    "xiaomi",
+    "miflora",
+    "plant",
+    "sensor"
   ],
-  "author": "",
+  "author": "moonshaper",
   "license": "ISC",
+  "files": [
+    "dist",
+    "index.js",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "engines": {
-    "node": ">=0.12.0",
-    "homebridge": ">=0.2.0"
+    "node": ">=16.0.0",
+    "homebridge": ">=1.4.0"
   },
   "dependencies": {
-    "miflora": "^1.0.3"
+    "debug": "^4.3.4",
+    "miflora": "^1.0.6"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.11",
+    "@types/debug": "^4.1.12",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^22.13.9",
+    "@typescript-eslint/eslint-plugin": "^7.2.0",
+    "@typescript-eslint/parser": "^7.2.0",
+    "chai": "^4.4.1",
+    "eslint": "^8.57.0",
+    "homebridge": "^1.6.1",
+    "mocha": "^10.3.0",
+    "nodemon": "^3.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.5.0"
   }
 }
