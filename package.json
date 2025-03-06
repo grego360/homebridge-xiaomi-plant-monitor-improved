@@ -7,11 +7,11 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/moonshaper/homebridge-xiaomi-plant-monitor-improved.git"
+    "url": "git+https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved.git"
   },
-  "homepage": "https://github.com/moonshaper/homebridge-xiaomi-plant-monitor-improved#readme",
+  "homepage": "https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved#readme",
   "bugs": {
-    "url": "https://github.com/moonshaper/homebridge-xiaomi-plant-monitor-improved/issues"
+    "url": "https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved/issues"
   },
   "scripts": {
     "build": "rm -rf ./dist && tsc",
@@ -28,7 +28,7 @@
     "plant",
     "sensor"
   ],
-  "author": "moonshaper",
+  "author": "grego360",
   "license": "ISC",
   "files": [
     "dist",

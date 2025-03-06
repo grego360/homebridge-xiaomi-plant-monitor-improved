@@ -1,4 +1,4 @@
-# Contributing to homebridge-xiaomi-plant-monitor
+# Contributing to homebridge-xiaomi-plant-monitor-improved
 
 Thank you for your interest in contributing to the Homebridge Mi Flora Plugin! This document provides guidelines and instructions for contributing.
 

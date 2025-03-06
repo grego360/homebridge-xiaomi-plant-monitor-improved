@@ -2,9 +2,9 @@
 
 ## Acknowledgments
 
-This plugin is a fork of the original [homebridge-xiaomi-plant-monitor](https://github.com/original-author/homebridge-xiaomi-plant-monitor) with improvements to Bluetooth connectivity, device discovery, and error handling.
+This plugin is a fork of the original [homebridge-xiaomi-plant-monitor](https://github.com/Zacknetic/homebridge-xiaomi-plant-monitor) with improvements to Bluetooth connectivity, device discovery, and error handling.
 
-[![Build and Test](https://github.com/grego360/homebridge-xiaomi-plant-monitor/actions/workflows/build.yml/badge.svg)](https://github.com/grego360/homebridge-xiaomi-plant-monitor/actions/workflows/build.yml)
+[![Build and Test](https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved/actions/workflows/build.yml/badge.svg)](https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved/actions/workflows/build.yml)
 
 This is a [Homebridge](https://github.com/homebridge/homebridge) plugin for exposing
 the Xiaomi Flower Care / Flower Mate / Flower Monitor / Mi Flora plant sensors to HomeKit.
@@ -133,8 +133,8 @@ This plugin has been converted from JavaScript to TypeScript in version 3.1.0 to
 
 ```bash
 # Clone the repository
-git clone https://github.com/grego360/homebridge-xiaomi-plant-monitor.git
-cd homebridge-xiaomi-plant-monitor
+git clone https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved.git
+cd homebridge-xiaomi-plant-monitor-improved
 
 # Install dependencies
 npm install
