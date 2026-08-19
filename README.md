@@ -1,254 +1,240 @@
-# Homebridge Xiaomi Plant Monitor (Improved)
+# Homebridge Xiaomi Plant Monitor Improved
 
 [![npm version](https://img.shields.io/npm/v/homebridge-xiaomi-plant-monitor-improved.svg)](https://www.npmjs.com/package/homebridge-xiaomi-plant-monitor-improved)
 [![npm downloads](https://img.shields.io/npm/dt/homebridge-xiaomi-plant-monitor-improved.svg)](https://www.npmjs.com/package/homebridge-xiaomi-plant-monitor-improved)
-[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 
-> A robust Homebridge plugin for Xiaomi Mi Flora plant sensors with improved Bluetooth connectivity and reliability
+A Homebridge dynamic-platform plugin for Xiaomi Mi Flora, Flower Care, Flower Pot, and compatible Bluetooth Low Energy plant sensors.
 
-## Acknowledgments
+## Features
 
-This plugin is a fork of the original [homebridge-xiaomi-plant-monitor](https://github.com/Zacknetic/homebridge-xiaomi-plant-monitor) with improvements to Bluetooth connectivity, device discovery, and error handling.
+- Soil moisture, battery, temperature, and ambient-light readings in HomeKit
+- Soil conductivity/fertility readings in Homebridge logs
+- Automatic discovery or an explicit list of Bluetooth addresses
+- Stable cached accessories across restarts and temporary discovery failures
+- Serialized Bluetooth operations with safe retry and timeout behavior
+- Per-device names, service visibility, and low-battery thresholds
+- Last-known-value retention and HomeKit fault status when a sensor is unavailable
+- Homebridge UI configuration schema
+- Native Mi Flora GATT client with no dependency on the legacy `miflora` wrapper
 
-## Overview
+The plugin never substitutes invented readings when Bluetooth communication fails.
 
-This Homebridge plugin integrates Xiaomi Mi Flora plant sensors (also known as Flower Care, Flower Mate, or Flower Monitor) with HomeKit, allowing you to monitor your plants' health directly from the Home app on your Apple devices.
+## Requirements
 
-This improved version features enhanced Bluetooth connectivity, robust error handling, and better device discovery - making it more reliable, especially in challenging environments with weak Bluetooth signals.
+- Homebridge 1.11 or 2.x
+- Node.js 22.14 or newer in the Node.js 22 line, or Node.js 24
+- A working Bluetooth Low Energy adapter
+- Linux permissions to open a raw Bluetooth HCI socket
 
-## Key Features
+Linux and Raspberry Pi OS are the primary deployment targets. macOS and Windows use Noble's platform-specific native Bluetooth implementation and should be considered best effort.
 
-### Core Functionality
-- **Automatic Discovery**: Finds your Mi Flora sensors on the network
-- **Multiple Sensor Types**:
-  - Moisture level (displayed as humidity in HomeKit)
-  - Battery level with low battery alerts
-  - Temperature readings
-  - Light level measurements
-  - Soil fertility (conductivity) data
+### Debian, Ubuntu, and Raspberry Pi OS
 
-### Improved Reliability
-- **Enhanced Bluetooth Connectivity**:
-  - Robust retry logic with exponential backoff
-  - Better handling of weak Bluetooth signals
-  - Graceful degradation when devices can't be reached
-- **Manual Device Configuration**: Option to specify device addresses directly
-- **Comprehensive Error Handling**: Prevents plugin crashes due to connectivity issues
-
-### Developer-Friendly
-- **TypeScript Implementation**: Improved type safety and code quality
-- **Extensive Documentation**: Clear setup and troubleshooting guides
-- **Regular Updates**: Maintained for compatibility with latest Homebridge versions
-
-## System Requirements
-
-- **Homebridge**: v1.4.0 or newer
-- **Node.js**: v16 or newer
-- **Bluetooth**: Hardware support required
-
-## Platform-Specific Prerequisites
-
-### Linux (Ubuntu/Debian/Raspbian)
+Install the Bluetooth packages before installing the plugin:
 
 ```bash
-sudo apt-get install bluetooth bluez libbluetooth-dev libudev-dev
+sudo apt-get update
+sudo apt-get install -y bluetooth bluez libbluetooth-dev libudev-dev libcap2-bin
 ```
 
-### macOS
+On Raspberry Pi OS, also install the Raspberry Pi Bluetooth package when it is not already present:
 
-No additional dependencies required, but you must ensure Bluetooth is enabled in System Settings.
+```bash
+sudo apt-get install -y pi-bluetooth
+```
 
-### Windows
+For an official Homebridge installation, grant raw Bluetooth access to its bundled Node.js binary:
 
-No additional dependencies required, but you must ensure Bluetooth is enabled in Settings.
+```bash
+sudo setcap cap_net_raw+eip "$(readlink -f /opt/homebridge/bin/node)"
+```
 
-### Raspberry Pi Specific Notes
+If Homebridge uses a different Node.js binary, apply the capability to that binary instead. Node.js upgrades may replace the executable and require the capability to be applied again.
 
-If running on a Raspberry Pi:
+Confirm that Bluetooth is enabled and a controller is available:
 
-1. Ensure your Raspberry Pi has Bluetooth capability (built-in on Pi 3/4/5)
-2. Position the Pi within reasonable proximity to your plant sensors
-3. Consider using a USB Bluetooth adapter if signal strength is poor
+```bash
+sudo systemctl enable --now bluetooth
+sudo rfkill unblock bluetooth
+bluetoothctl list
+```
 
 ## Installation
 
-### Via Homebridge UI (Recommended)
-
-1. Open your Homebridge UI dashboard
-2. Navigate to the "Plugins" tab
-3. Search for "xiaomi plant monitor improved"
-4. Click "Install"
-
-### Via Command Line
+Install **Xiaomi Plant Monitor Improved** from the Homebridge UI, or use npm in the environment where Homebridge manages its plugins:
 
 ```bash
 npm install -g homebridge-xiaomi-plant-monitor-improved
 ```
 
+Restart Homebridge after installation.
+
 ## Configuration
 
-### Basic Configuration
+Use the Homebridge UI settings form or add the platform to `config.json`. The platform identifier remains `xiaomi-plant-monitor` for compatibility with existing installations and cached accessories.
 
-Add the platform to your Homebridge `config.json` file:
-
-```json
-"platforms": [
-    {
-        "platform": "xiaomi-plant-monitor",
-        "name": "Plant Monitor",
-        "fetchDataIntervalInMs": 3600000,
-        "displayTemperature": true,
-        "displayLightLevel": true,
-        "displayFertility": true,
-        "lowBatteryThreshold": 10
-    }
-]
-```
-
-### Manual Device Configuration (Recommended)
-
-For more reliable operation, especially with weak Bluetooth signals, manually specify your devices:
+Manual device configuration is recommended because it provides stable names and limits discovery to the intended sensors:
 
 ```json
-"platforms": [
+{
+  "platform": "xiaomi-plant-monitor",
+  "name": "Plant Monitor",
+  "fetchDataIntervalInMs": 3600000,
+  "displayTemperature": true,
+  "displayLightLevel": true,
+  "displayFertility": true,
+  "lowBatteryThreshold": 10,
+  "devices": [
     {
-        "platform": "xiaomi-plant-monitor",
-        "name": "Plant Monitor",
-        "fetchDataIntervalInMs": 7200000,
-        "devices": [
-            {
-                "address": "c4:7c:8d:6c:09:00",
-                "name": "Monstera Plant"
-            },
-            {
-                "address": "c4:7c:8d:6c:09:01",
-                "name": "Fiddle Leaf Fig"
-            }
-        ]
+      "address": "c4:7c:8d:6c:09:00",
+      "name": "Monstera"
+    },
+    {
+      "address": "c4:7c:8d:6c:09:01",
+      "name": "Fiddle Leaf Fig",
+      "displayLightLevel": false,
+      "lowBatteryThreshold": 15
     }
-]
+  ]
+}
 ```
 
-### Configuration Options
+Omit `devices`, or leave it empty, to discover all compatible sensors automatically. After discovery, add each address explicitly to assign a stable friendly name.
 
 | Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `platform` | string | Required | Must be "xiaomi-plant-monitor" |
-| `name` | string | "Plant Monitor" | Name for the platform in HomeKit |
-| `fetchDataIntervalInMs` | number | 3600000 | Interval in milliseconds between data updates (default: 1 hour) |
-| `displayTemperature` | boolean | true | Whether to display temperature sensors in HomeKit |
-| `displayLightLevel` | boolean | true | Whether to display light level sensors in HomeKit |
-| `displayFertility` | boolean | true | Whether to display fertility sensors in HomeKit |
-| `lowBatteryThreshold` | number | 10 | Battery percentage threshold for low battery warnings |
-| `devices` | array | [] | Optional array of manually specified devices |
-| `devices[].address` | string | - | Bluetooth MAC address of the device |
-| `devices[].name` | string | - | Custom name for the device in HomeKit |
+| --- | --- | --- | --- |
+| `name` | string | `Plant Monitor` | Platform display name |
+| `fetchDataIntervalInMs` | integer | `3600000` | Delay between completed polling cycles; minimum 30000 ms |
+| `displayTemperature` | boolean | `true` | Add temperature services by default |
+| `displayLightLevel` | boolean | `true` | Add ambient-light services by default |
+| `displayFertility` | boolean | `true` | Include conductivity/fertility values in logs |
+| `lowBatteryThreshold` | integer | `10` | Default low-battery threshold, clamped to 0–100% |
+| `devices` | array | omitted | Explicit sensors; enables address-filtered discovery |
+| `devices[].address` | string | required | BLE MAC address or platform BLE UUID |
+| `devices[].name` | string | generated | HomeKit accessory name |
+| `devices[].displayTemperature` | boolean | global value | Per-device temperature override |
+| `devices[].displayLightLevel` | boolean | global value | Per-device light override |
+| `devices[].displayFertility` | boolean | global value | Per-device fertility-log override |
+| `devices[].lowBatteryThreshold` | integer | global value | Per-device low-battery threshold |
 
-## Troubleshooting Guide
+Apple Home has no standard soil-conductivity characteristic, so fertility is logged rather than displayed as a Home tile. Moisture is represented using HomeKit's humidity service.
 
-### Common Issues and Solutions
+## Finding a sensor address
 
-#### Device Not Discovered
-
-1. **Bluetooth Enabled**: Verify Bluetooth is enabled on your system
-2. **Battery Check**: Ensure the Mi Flora device has a working battery (CR2032)
-3. **Proximity**: Move the Homebridge server closer to the Mi Flora device
-4. **Manual Configuration**: Add the device address manually in your config (see Manual Device Configuration)
-
-#### Inaccurate Moisture Readings (0% or 100%)
-
-1. **Sensor Placement**: Ensure all 4 sensor prongs are fully inserted into the soil
-2. **Soil Contact**: Clean the metal prongs if they appear dirty or corroded
-3. **Calibration**: Remove and reinsert the sensor into the soil
-4. **Water Level**: If soil is completely dry, readings of 0% may be accurate
-
-#### Connection Timeouts
-
-1. **Signal Strength**: Check the RSSI value in logs (values below -80 indicate weak signal)
-2. **Interference**: Move the sensor away from other electronic devices
-3. **Retry Settings**: Increase the retry count in your configuration
-4. **Update Interval**: Consider increasing `fetchDataIntervalInMs` to reduce connection frequency
-
-### Finding Your Device Address
-
-To find your Mi Flora device's Bluetooth address:
+Mi Flora sensors advertise without pairing. Keep the sensor near the Homebridge adapter, close any plant-monitoring phone app, and scan for 30 seconds:
 
 ```bash
-sudo hcitool lescan
+bluetoothctl --timeout 30 scan on
+bluetoothctl devices
 ```
 
-Look for devices named "Flower care" or "Flower mate" in the output.
-
-### Enabling Debug Logs
-
-For detailed logging, start Homebridge with the debug flag:
+Inspect a likely address:
 
 ```bash
-DEBUG=homebridge-xiaomi-plant-monitor-improved homebridge
+bluetoothctl info C4:7C:8D:6C:09:00
 ```
 
-For even more detailed Bluetooth logs:
+An original Flower Care sensor normally advertises Xiaomi service UUID `0000fe95-0000-1000-8000-00805f9b34fb`. Its friendly name may remain unavailable until the first successful connection.
+
+Do not pair the sensor. A temporary `bluetoothctl connect ADDRESS` can be used as a diagnostic; disconnect it before starting Homebridge.
+
+## Polling behavior
+
+At the start of a cycle, the plugin discovers configured sensors, connects to each sensor serially, reads firmware and battery data, enables realtime mode, reads measurements, and disconnects. A slow Linux BLE connection may take close to the 90-second connection deadline; the complete query has a 120-second deadline.
+
+One hour (`3600000` ms) is appropriate for normal plant monitoring. Use `30000` only for short testing sessions. The next cycle is scheduled after the current cycle completes, so polls do not overlap.
+
+Many Mi Flora sensors accept only one active GATT connection. The Flower Care app, another Homebridge instance, Home Assistant, or another active gateway can make discovery succeed while reads time out. Passive advertisement listeners normally do not hold a GATT connection.
+
+## Failure behavior
+
+When a sensor cannot be read, the plugin:
+
+1. Leaves the last valid HomeKit readings unchanged.
+2. Marks its sensor services with a fault status.
+3. Logs the operation and error that failed.
+4. Clears the fault after the next successful read.
+
+Ordinary transient errors can be retried. A timed-out native operation is not retried immediately because it may still be running and cannot always be cancelled safely.
+
+A discovery miss does not delete an accessory. In explicit-device mode, an accessory is removed only when its address is removed from `devices`.
+
+The legacy `returnDefaultDataOnError` option is ignored and can be removed from configuration.
+
+## Troubleshooting
+
+### Sensor is not discovered
+
+- Replace the CR2032 battery if its condition is uncertain.
+- Move the sensor closer to the Homebridge adapter.
+- Confirm the controller is listed by `bluetoothctl list`.
+- Run `bluetoothctl --timeout 30 scan on` and look for the Xiaomi `FE95` service.
+- Configure the discovered address explicitly.
+- Ensure Bluetooth is powered on and not blocked by `rfkill`.
+
+### Discovery works but reads time out
+
+- Close the Flower Care app and temporarily disable Bluetooth on nearby phones.
+- Stop other services that actively poll the same sensor.
+- Keep the sensor within one metre of the adapter for testing.
+- Replace the battery even if advertisements are still visible.
+- Stop any interactive `bluetoothctl` scan or connection before restarting Homebridge.
+- Restart Bluetooth and then Homebridge.
+
+Version 4.1 and newer report whether the connection, GATT discovery, characteristic read, characteristic write, or disconnect timed out. Allow at least two minutes after startup before restarting the bridge during diagnosis.
+
+### Raspberry Pi permission errors
+
+Verify the capability on the actual Node.js binary used by Homebridge:
 
 ```bash
-DEBUG=homebridge-xiaomi-plant-monitor-improved,miflora* homebridge
+getcap "$(readlink -f /opt/homebridge/bin/node)"
 ```
+
+Expected output includes `cap_net_raw=eip`. Reapply it with `setcap` if it is missing.
+
+### `EAFNOSUPPORT` in an LXC container
+
+The Noble transport opens a raw Linux HCI socket. Linux rejects `AF_BLUETOOTH` sockets in a separate network namespace, so a normal LXC container can report `Address family not supported by protocol` even when its USB adapter is visible.
+
+Use a VM with USB Bluetooth passthrough, run Homebridge directly on a suitable host, or use a deployment that shares the host network namespace. Device passthrough and additional container capabilities alone do not remove this kernel limitation. A VM is the recommended Proxmox deployment for this transport.
+
+### Homebridge reports the plugin but Bluetooth is unavailable
+
+Native Bluetooth initialization is deferred until discovery. The platform therefore remains registered, restores cached accessories, retains their last real readings, and reports the Bluetooth failure without making Homebridge treat the plugin as missing.
 
 ## Development
 
-### Building from Source
-
 ```bash
-# Clone the repository
-git clone https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved.git
-cd homebridge-xiaomi-plant-monitor-improved
-
-# Install dependencies
-npm install
-
-# Build the TypeScript code
+npm ci
+npm run lint
+npm test
 npm run build
-
-# Watch mode for development
-npm run watch
+npm pack --dry-run
 ```
 
-### Available Scripts
+The codebase is split into configuration normalization, native Mi Flora discovery/GATT transport, serialized data fetching, HomeKit service management, and platform lifecycle modules under `src/`.
 
-- `npm run build` - Builds the TypeScript code
-- `npm run watch` - Builds and watches for changes
-- `npm test` - Runs the test suite
-- `npm run lint` - Lints the codebase
+Pull requests should include tests for behavior changes. Bluetooth changes should also be exercised on actual Raspberry Pi or Linux hardware with both a reachable and an unavailable sensor.
 
-## Technical Details
+## Upgrade notes
 
-### How It Works
+### Version 4.1
 
-This plugin uses Bluetooth Low Energy (BLE) to communicate with Mi Flora devices. It:
+- The unmaintained `miflora` wrapper was replaced by an internal client built directly on `@abandonware/noble`.
+- Connection setup now has a 90-second deadline, a complete query has a 120-second deadline, and required GATT characteristics are discovered directly.
+- No configuration changes are required when upgrading from 4.0.
 
-1. Discovers devices via Bluetooth scanning
-2. Connects to each device and queries sensor data
-3. Creates HomeKit accessories for each sensor type
-4. Periodically updates the sensor data based on the configured interval
+### Version 4.0
 
-### Bluetooth Connectivity Improvements
+- Node.js 16, 18, and 20 are no longer supported.
+- Keep the existing `xiaomi-plant-monitor` platform value.
+- Cached accessories continue to use Bluetooth-address-derived UUIDs.
+- Failed queries retain real cached values instead of publishing synthetic defaults.
 
-The improved version implements:
+## Acknowledgments
 
-- Retry logic with exponential backoff
-- Better error handling for connection failures
-- Support for manual device configuration
-- Graceful degradation when devices can't be reached
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-If you encounter issues or have questions:
-
-1. Check the [Troubleshooting Guide](#troubleshooting-guide)
-2. Open an [issue on GitHub](https://github.com/grego360/homebridge-xiaomi-plant-monitor-improved/issues)
+This project builds on the original [homebridge-xiaomi-plant-monitor](https://github.com/Zacknetic/homebridge-xiaomi-plant-monitor) project and the wider Mi Flora reverse-engineering community.
 
 ## License
 

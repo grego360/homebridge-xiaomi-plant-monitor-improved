@@ -1,45 +1,31 @@
-import miflora from 'miflora';
-/**
- * Discover Mi Flora devices with improved error handling
- */
-export async function discoverDevices(config, log) {
-    log.info('Scanning for Mi Flora plants...');
-    try {
-        // Configure discovery options
-        const discoveryOptions = {
-            duration: 20000, // Increase scan duration to 20 seconds for better discovery
-            // If specific devices are configured, only look for those
-            addresses: config.devices?.map(device => device.address),
-            ignoreUnknown: config.devices?.length ? true : false,
-        };
-        log.debug('Discovery options:', discoveryOptions);
-        // Attempt discovery with a timeout
-        const discoveryPromise = miflora.discover(discoveryOptions);
-        // Add a timeout to the discovery process
-        const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Discovery timed out after 30 seconds')), 30000);
-        });
-        // Race the discovery against the timeout
-        const devices = await Promise.race([discoveryPromise, timeoutPromise]);
-        log.info(`Finished scanning, found ${devices.length} plant(s)`);
-        return devices;
+import { normalizeAddress } from "./config.js";
+import { DEFAULT_DISCOVERY_DURATION_MS, DISCOVERY_TIMEOUT_MS, } from "./settings.js";
+import { withTimeout } from "./utils.js";
+async function loadMiFlora() {
+    // Noble initializes its native HCI socket while the transport is loaded.
+    // Loading it on demand lets Homebridge register the platform even when BLE
+    // is unavailable, which is especially useful for container diagnostics.
+    return import("./miFloraClient.js");
+}
+export async function discoverDevices(config, log, loader = loadMiFlora) {
+    const addresses = config.hasExplicitDevices
+        ? config.devices.map((device) => device.address)
+        : undefined;
+    const options = {
+        duration: DEFAULT_DISCOVERY_DURATION_MS,
+        addresses,
+        ignoreUnknown: addresses !== undefined,
+    };
+    log.debug(`Bluetooth discovery options: ${JSON.stringify(options)}`);
+    const miflora = await loader();
+    const discovered = await withTimeout(miflora.discover(options), DISCOVERY_TIMEOUT_MS, `Discovery timed out after ${DISCOVERY_TIMEOUT_MS} ms`);
+    const devices = new Map();
+    for (const device of discovered) {
+        const address = normalizeAddress(device.address);
+        device.address = address;
+        devices.set(address, device);
     }
-    catch (error) {
-        log.error('Error discovering plants:', error);
-        // If we have configured devices but discovery failed, try to add them anyway
-        if (config.devices?.length) {
-            log.info('Using configured devices as fallback');
-            return config.devices.map(deviceConfig => {
-                log.info(`Creating fallback device for ${deviceConfig.address}`);
-                return {
-                    address: deviceConfig.address,
-                    query: async () => {
-                        throw new Error('Device not available, please check Bluetooth connection');
-                    },
-                };
-            });
-        }
-        throw error;
-    }
+    log.info(`Bluetooth discovery found ${devices.size} plant(s)`);
+    return [...devices.values()];
 }
 //# sourceMappingURL=deviceDiscovery.js.map

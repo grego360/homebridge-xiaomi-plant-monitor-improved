@@ -17,9 +17,9 @@ Please be respectful and considerate of others when contributing to this project
 ## Development Setup
 
 1. Clone your fork of the repository
-2. Install dependencies:
+2. Use Node.js 22 or 24 and install the locked dependencies:
    ```bash
-   npm install
+   npm ci
    ```
 3. Build the TypeScript code:
    ```bash
@@ -29,7 +29,7 @@ Please be respectful and considerate of others when contributing to this project
    ```bash
    npm test
    ```
-5. Use watch mode during development:
+5. Use TypeScript watch mode during development:
    ```bash
    npm run watch
    ```
@@ -50,6 +50,7 @@ Please be respectful and considerate of others when contributing to this project
 - Add tests for new features
 - Ensure existing tests pass
 - Test your changes with actual Mi Flora devices if possible
+- Run `npm pack --dry-run` and inspect the publish manifest for release changes
 
 ## Pull Request Process
 

@@ -1,308 +1,167 @@
-import miflora from "miflora";
-import debugModule from "debug";
-// Initialize debug logger
-debugModule("homebridge-xiaomi-plant-monitor");
-const PLUGIN_NAME = "homebridge-xiaomi-plant-monitor";
-const PLATFORM_NAME = "xiaomi-plant-monitor";
-/**
- * MiFlora Plant Monitor Platform for Homebridge
- */
-class MifloraPlatform {
-    constructor(log, config, api) {
-        this.plants = [];
+import { deviceConfigForAddress, isSupportedAddress, normalizeAddress, normalizeConfig, } from "./config.js";
+import { disconnectPlantDevices, fetchPlantsData } from "./dataFetcher.js";
+import { discoverDevices } from "./deviceDiscovery.js";
+import { configureAccessoryServices } from "./platformAccessory.js";
+import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from "./settings.js";
+import { handleError } from "./utils.js";
+export class MifloraPlatform {
+    log;
+    api;
+    plants = [];
+    config;
+    pollTimer;
+    running = false;
+    shuttingDown = false;
+    constructor(log, rawConfig, api) {
         this.log = log;
         this.api = api;
-        this.config = config;
-        // Configuration options with defaults
-        this.fetchDataIntervalInMs = this.config.fetchDataIntervalInMs || 3600000; // Default: 1 hour
-        this.displayTemperature = this.config.displayTemperature !== false; // Default: true
-        this.displayLightLevel = this.config.displayLightLevel !== false; // Default: true
-        this.displayFertility = this.config.displayFertility !== false; // Default: true
-        this.lowBatteryThreshold = this.config.lowBatteryThreshold || 10; // Default: 10%
-        // Only start the plugin once the Homebridge API is available
-        if (api) {
-            // Listen to event "didFinishLaunching", this means homebridge is done loading cached accessories
-            this.api.on("didFinishLaunching", () => {
-                this.log.info("Xiaomi Plant Monitor finished launching");
-                // Start the plugin
-                this.run().catch((error) => handleError(this.log, "Error during initial run", error));
-                // Set up the interval for data fetching
-                setInterval(() => this.run().catch((error) => handleError(this.log, "Error during scheduled run", error)), this.fetchDataIntervalInMs);
+        this.config = normalizeConfig(rawConfig, log);
+        this.api.on("didFinishLaunching", () => {
+            void this.start().catch((error) => {
+                handleError(this.log, "Could not start the platform", error);
             });
-        }
+        });
+        this.api.on("shutdown", () => {
+            this.shuttingDown = true;
+            if (this.pollTimer) {
+                clearTimeout(this.pollTimer);
+            }
+            // Trigger disconnect synchronously so a pending native connection does
+            // not keep a child bridge alive until the supervisor has to kill it.
+            void disconnectPlantDevices(this.plants, this.log);
+        });
     }
-    /**
-     * Main run method that discovers and updates plant data
-     */
+    async start() {
+        this.log.info(`Starting Xiaomi Plant Monitor ${PLUGIN_VERSION}; polling every ${this.config.fetchDataIntervalInMs} ms`);
+        this.reconcileConfiguredAccessories();
+        await this.run();
+        this.scheduleNextRun();
+    }
+    scheduleNextRun() {
+        if (this.shuttingDown) {
+            return;
+        }
+        this.pollTimer = setTimeout(() => {
+            void this.run().finally(() => this.scheduleNextRun());
+        }, this.config.fetchDataIntervalInMs);
+    }
     async run() {
-        try {
-            this.log.info("Searching for Mi Flora plants...");
-            await this.searchAndAddNewPlant();
-            this.log.info("Fetching plant data...");
-            await this.fetchPlantsData();
+        if (this.running) {
+            this.log.warn("Skipping a polling cycle because the previous cycle is still running");
+            return;
         }
-        catch (e) {
-            handleError(this.log, "Error during run cycle", e);
+        this.running = true;
+        try {
+            await this.searchAndAddNewPlants();
+            await fetchPlantsData(this.plants, this.log, this.api);
+        }
+        catch (error) {
+            handleError(this.log, "Unexpected polling-cycle failure", error);
+        }
+        finally {
+            this.running = false;
         }
     }
-    /**
-     * Fetch data for all plants in parallel
-     */
-    async fetchPlantsData() {
-        const promises = this.plants.map((plant) => this.updatePlantData(plant));
-        await Promise.allSettled(promises);
-    }
-    /**
-     * Discover Mi Flora devices with improved error handling
-     */
-    async searchAndAddNewPlant() {
-        this.log.info("Scanning for Mi Flora plants...");
+    async searchAndAddNewPlants() {
         try {
-            // Configure discovery options
-            const discoveryOptions = {
-                duration: 20000, // Increase scan duration to 20 seconds for better discovery
-                // If specific devices are configured, only look for those
-                addresses: this.config.devices?.map((device) => device.address),
-                ignoreUnknown: this.config.devices?.length ? true : false,
-            };
-            this.log.debug("Discovery options:", discoveryOptions);
-            // Attempt discovery with a timeout
-            const discoveryPromise = miflora.discover(discoveryOptions);
-            // Add a timeout to the discovery process
-            const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error("Discovery timed out after 30 seconds")), 30000);
-            });
-            // Race the discovery against the timeout
-            const devices = await Promise.race([discoveryPromise, timeoutPromise]);
-            this.log.info(`Finished scanning, found ${devices.length} plant(s)`);
+            const devices = await discoverDevices(this.config, this.log);
             for (const device of devices) {
-                await this.addPlantAccessory(device);
+                const address = normalizeAddress(device.address);
+                if (!isSupportedAddress(address)) {
+                    this.log.warn(`Ignoring discovered device with invalid address: ${device.address}`);
+                    continue;
+                }
+                this.upsertPlant(address, device);
             }
         }
         catch (error) {
-            handleError(this.log, "Error discovering plants", error);
-            // If we have configured devices but discovery failed, try to add them anyway
-            if (this.config.devices?.length) {
-                this.log.info("Using configured devices as fallback");
-                for (const deviceConfig of this.config.devices) {
-                    try {
-                        // Create a minimal device object from the configuration
-                        const mockDevice = {
-                            address: deviceConfig.address,
-                            query: async () => {
-                                throw new Error("Device not available, please check Bluetooth connection");
-                            },
-                        };
-                        await this.addPlantAccessory(mockDevice);
-                    }
-                    catch (deviceError) {
-                        handleError(this.log, `Error adding configured device ${deviceConfig.address}`, deviceError);
-                    }
-                }
-            }
+            handleError(this.log, "Bluetooth discovery failed; cached accessories will be retained", error, "warn");
         }
     }
-    /**
-     * Add a new plant accessory or update an existing one
-     */
-    async addPlantAccessory(device) {
-        try {
-            const plant = this.plants.find((plant) => plant.accessory.displayName === device.address);
-            if (plant === undefined) {
-                this.log.info(`Adding new plant: ${device.address}`);
-                const uuid = this.api.hap.uuid.generate(device.address);
-                const accessory = new this.api.platformAccessory(device.address, uuid);
-                // Set accessory information
-                const informationService = accessory.getService(this.api.hap.Service.AccessoryInformation) ||
-                    accessory.addService(this.api.hap.Service.AccessoryInformation);
-                informationService
-                    .setCharacteristic(this.api.hap.Characteristic.Manufacturer, "Xiaomi")
-                    .setCharacteristic(this.api.hap.Characteristic.Model, "Mi Flora Plant Sensor")
-                    .setCharacteristic(this.api.hap.Characteristic.SerialNumber, device.address);
-                // Add required services
-                accessory.addService(this.api.hap.Service.HumiditySensor, `${device.address} Moisture`);
-                accessory.addService(this.api.hap.Service.BatteryService, `${device.address} Battery`);
-                // Add optional services based on config
-                if (this.displayTemperature) {
-                    accessory.addService(this.api.hap.Service.TemperatureSensor, `${device.address} Temperature`);
-                }
-                if (this.displayLightLevel) {
-                    accessory.addService(this.api.hap.Service.LightSensor, `${device.address} Light`);
-                }
-                this.plants.push({
-                    device,
-                    accessory,
-                    lowBatteryThreshold: this.lowBatteryThreshold,
-                    displayTemperature: this.displayTemperature,
-                    displayLightLevel: this.displayLightLevel,
-                    displayFertility: this.displayFertility,
-                });
-                this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
-                    accessory,
-                ]);
-            }
-            else if (plant.device === undefined) {
-                this.log.info(`Setting cached plant: ${device.address}`);
-                const indexToUpdate = this.plants.findIndex((plant) => plant.accessory.displayName === device.address);
-                this.plants[indexToUpdate] = {
-                    device,
-                    accessory: plant.accessory,
-                    lowBatteryThreshold: plant.lowBatteryThreshold,
-                    displayTemperature: plant.displayTemperature,
-                    displayLightLevel: plant.displayLightLevel,
-                    displayFertility: plant.displayFertility,
-                };
-            }
-            else {
-                this.log.debug(`Plant already exists: ${device.address}`);
-            }
+    reconcileConfiguredAccessories() {
+        for (const device of this.config.devices) {
+            this.upsertPlant(device.address);
         }
-        catch (error) {
-            handleError(this.log, `Error adding plant accessory ${device.address}`, error);
+        if (!this.config.hasExplicitDevices || this.config.devices.length === 0) {
+            return;
         }
-    }
-    /**
-     * Query plant data with retry logic
-     */
-    async queryPlantData(plant) {
-        if (!plant.device) {
-            throw new Error('Device is undefined');
-        }
-        let retries = 3;
-        let lastError = null;
-        let queryResult = null;
-        while (retries > 0 && queryResult === null) {
-            try {
-                this.log.debug(`Attempting to query plant ${plant.accessory.displayName}, attempts remaining: ${retries}`);
-                queryResult = await plant.device.query();
-                break; // Success, exit the retry loop
-            }
-            catch (error) {
-                lastError = error instanceof Error ? error : new Error(String(error));
-                handleError(this.log, `Query attempt failed for ${plant.accessory.displayName}`, lastError, "warn");
-                retries--;
-                if (retries > 0) {
-                    // Wait before retrying (exponential backoff)
-                    await new Promise((resolve) => setTimeout(resolve, (4 - retries) * 2000));
-                }
-            }
-        }
-        if (queryResult === null) {
-            throw (lastError ||
-                new Error("Failed to query device after multiple attempts"));
-        }
-        return queryResult;
-    }
-    /**
-     * Update accessory services with new plant data
-     */
-    updateAccessoryServices(plant, queryResult) {
-        const { firmwareInfo, sensorValues } = queryResult;
-        const { battery, firmware } = firmwareInfo;
-        const { temperature, lux, moisture, fertility } = sensorValues;
-        this.log.info(`Plant: ${plant.accessory.displayName} | Battery: ${battery}% | Firmware: ${firmware} | Temperature: ${temperature}°C | Light: ${lux} lux | Moisture: ${moisture}% | Fertility: ${fertility} µS/cm`);
-        // Update humidity service (moisture)
-        const humidityService = plant.accessory.getService(this.api.hap.Service.HumiditySensor);
-        if (humidityService) {
-            humidityService.updateCharacteristic(this.api.hap.Characteristic.CurrentRelativeHumidity, moisture);
-            humidityService.updateCharacteristic(this.api.hap.Characteristic.StatusLowBattery, battery < plant.lowBatteryThreshold
-                ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-                : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL);
-        }
-        // Update battery service
-        const batteryService = plant.accessory.getService(this.api.hap.Service.BatteryService);
-        if (batteryService) {
-            batteryService.updateCharacteristic(this.api.hap.Characteristic.ChargingState, this.api.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
-            batteryService.updateCharacteristic(this.api.hap.Characteristic.BatteryLevel, battery);
-            batteryService.updateCharacteristic(this.api.hap.Characteristic.StatusLowBattery, battery < plant.lowBatteryThreshold
-                ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-                : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL);
-        }
-        // Update temperature service if enabled
-        if (plant.displayTemperature) {
-            const temperatureService = plant.accessory.getService(this.api.hap.Service.TemperatureSensor);
-            if (temperatureService) {
-                temperatureService.updateCharacteristic(this.api.hap.Characteristic.CurrentTemperature, temperature);
-                temperatureService.updateCharacteristic(this.api.hap.Characteristic.StatusLowBattery, battery < plant.lowBatteryThreshold
-                    ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-                    : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL);
-            }
-        }
-        // Update light level service if enabled
-        if (plant.displayLightLevel) {
-            const lightService = plant.accessory.getService(this.api.hap.Service.LightSensor);
-            if (lightService) {
-                lightService.updateCharacteristic(this.api.hap.Characteristic.CurrentAmbientLightLevel, lux);
-                lightService.updateCharacteristic(this.api.hap.Characteristic.StatusLowBattery, battery < plant.lowBatteryThreshold
-                    ? this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-                    : this.api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL);
-            }
-        }
-        // Update fertility data (we don't have a direct HomeKit service for this)
-        // So we log it for now, but in the future could add a custom characteristic
-        if (plant.displayFertility) {
-            this.log.debug(`Plant: ${plant.accessory.displayName} | Fertility: ${fertility} µS/cm`);
-            // Future enhancement: could add a custom characteristic for fertility
-        }
-    }
-    /**
-     * Update data for a specific plant with retry logic
-     */
-    async updatePlantData(plant) {
-        try {
-            if (plant.device === undefined) {
-                this.log.info("Cached plant not found, removing from accessories");
+        const configuredAddresses = new Set(this.config.devices.map((device) => device.address));
+        for (let index = this.plants.length - 1; index >= 0; index -= 1) {
+            const plant = this.plants[index];
+            if (!configuredAddresses.has(plant.config.address)) {
+                this.log.info(`Removing ${plant.config.name}; it is no longer configured`);
                 this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
                     plant.accessory,
                 ]);
-                const indexToDelete = this.plants.findIndex((element) => element === plant);
-                this.plants.splice(indexToDelete, 1);
-                return;
+                this.plants.splice(index, 1);
             }
-            // Query the device for updated data
-            const queryResult = await this.queryPlantData(plant);
-            // Update accessory services with new data
-            this.updateAccessoryServices(plant, queryResult);
-        }
-        catch (error) {
-            handleError(this.log, `Error updating plant data for ${plant.accessory.displayName}`, error);
         }
     }
-    /**
-     * Configure cached accessories
-     */
-    configureAccessory(accessory) {
-        this.log.info(`Adding cached accessory: ${accessory.displayName}`);
-        this.plants.push({
-            device: undefined,
+    upsertPlant(address, device) {
+        const normalizedAddress = normalizeAddress(address);
+        const config = deviceConfigForAddress(this.config, normalizedAddress);
+        let plant = this.plants.find((candidate) => candidate.config.address === normalizedAddress);
+        if (plant) {
+            plant.config = config;
+            if (device) {
+                plant.device = device;
+            }
+            configureAccessoryServices(plant, this.api, PLUGIN_VERSION);
+            return plant;
+        }
+        const uuid = this.api.hap.uuid.generate(normalizedAddress);
+        const accessory = new this.api.platformAccessory(config.name, uuid);
+        const context = accessory.context;
+        context.deviceAddress = normalizedAddress;
+        context.consecutiveFailures = 0;
+        plant = {
             accessory,
-            lowBatteryThreshold: this.lowBatteryThreshold,
-            displayTemperature: this.displayTemperature,
-            displayLightLevel: this.displayLightLevel,
-            displayFertility: this.displayFertility,
-        });
+            config,
+            device,
+            consecutiveFailures: 0,
+        };
+        configureAccessoryServices(plant, this.api, PLUGIN_VERSION);
+        this.plants.push(plant);
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.log.info(`Registered ${config.name} (${normalizedAddress})`);
+        return plant;
+    }
+    configureAccessory(accessory) {
+        const context = accessory.context;
+        const address = this.addressFromCachedAccessory(accessory, context);
+        if (!address) {
+            this.log.error(`Cannot restore cached accessory ${accessory.displayName}: no valid Bluetooth address was found`);
+            return;
+        }
+        context.deviceAddress = address;
+        const plant = {
+            accessory,
+            config: deviceConfigForAddress(this.config, address),
+            consecutiveFailures: context.consecutiveFailures ?? 0,
+        };
+        configureAccessoryServices(plant, this.api, PLUGIN_VERSION);
+        this.plants.push(plant);
+        this.api.updatePlatformAccessories([accessory]);
+        this.log.info(`Restored cached accessory ${plant.config.name} (${address})`);
+    }
+    addressFromCachedAccessory(accessory, context) {
+        const candidates = [context.deviceAddress, accessory.displayName];
+        const information = accessory.getService(this.api.hap.Service.AccessoryInformation);
+        if (information) {
+            candidates.push(information.getCharacteristic(this.api.hap.Characteristic.SerialNumber).value);
+        }
+        for (const candidate of candidates) {
+            if (typeof candidate === "string") {
+                const address = normalizeAddress(candidate);
+                if (isSupportedAddress(address)) {
+                    return address;
+                }
+            }
+        }
+        return undefined;
     }
 }
-// Centralized error handling function
-function handleError(log, message, error, level = "error") {
-    const timestamp = new Date().toISOString();
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const logMessage = `[${timestamp}] ${message}: ${errorMessage}`;
-    if (level === "error") {
-        log.error(logMessage);
-    }
-    else if (level === "warn") {
-        log.warn(logMessage);
-    }
-    else {
-        log.info(logMessage);
-    }
-}
-/**
- * Register the platform with Homebridge
- */
-const init = (api) => {
+export default (api) => {
     api.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, MifloraPlatform);
 };
-export default init;
 //# sourceMappingURL=index.js.map

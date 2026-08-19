@@ -1,0 +1,108 @@
+{
+  "pluginAlias": "xiaomi-plant-monitor",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Connect Xiaomi Mi Flora plant sensors to HomeKit over Bluetooth Low Energy.",
+  "footerDisplay": "For setup and troubleshooting guidance, see the plugin README.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Platform Name",
+        "type": "string",
+        "default": "Plant Monitor",
+        "required": true
+      },
+      "fetchDataIntervalInMs": {
+        "title": "Polling Interval (milliseconds)",
+        "type": "integer",
+        "default": 3600000,
+        "minimum": 30000,
+        "required": true
+      },
+      "displayTemperature": {
+        "title": "Show Temperature",
+        "type": "boolean",
+        "default": true
+      },
+      "displayLightLevel": {
+        "title": "Show Light Level",
+        "type": "boolean",
+        "default": true
+      },
+      "displayFertility": {
+        "title": "Log Soil Fertility",
+        "type": "boolean",
+        "default": true
+      },
+      "lowBatteryThreshold": {
+        "title": "Low Battery Threshold (%)",
+        "type": "integer",
+        "default": 10,
+        "description": "A value from 0 to 100. Values outside this range are clamped by the plugin."
+      },
+      "devices": {
+        "title": "Configured Sensors",
+        "type": "array",
+        "items": {
+          "title": "Sensor",
+          "type": "object",
+          "properties": {
+            "address": {
+              "title": "Bluetooth Address",
+              "type": "string",
+              "placeholder": "c4:7c:8d:6c:09:00",
+              "required": true
+            },
+            "name": {
+              "title": "Plant Name",
+              "type": "string"
+            },
+            "displayTemperature": {
+              "title": "Show Temperature",
+              "type": "boolean"
+            },
+            "displayLightLevel": {
+              "title": "Show Light Level",
+              "type": "boolean"
+            },
+            "displayFertility": {
+              "title": "Log Soil Fertility",
+              "type": "boolean"
+            },
+            "lowBatteryThreshold": {
+              "title": "Low Battery Threshold (%)",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            }
+          }
+        }
+      }
+    }
+  },
+  "layout": [
+    "name",
+    "fetchDataIntervalInMs",
+    "displayTemperature",
+    "displayLightLevel",
+    "displayFertility",
+    "lowBatteryThreshold",
+    {
+      "key": "devices",
+      "type": "tabarray",
+      "title": "{{ value.name || value.address || 'New Sensor' }}",
+      "expandable": true,
+      "expanded": true,
+      "orderable": true,
+      "items": [
+        "devices[].address",
+        "devices[].name",
+        "devices[].displayTemperature",
+        "devices[].displayLightLevel",
+        "devices[].displayFertility",
+        "devices[].lowBatteryThreshold"
+      ]
+    }
+  ]
+}

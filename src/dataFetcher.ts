@@ -1,200 +1,190 @@
-import type { PlantAccessory, MiFloraData } from "./types.js";
-import type { Logger, API } from "homebridge";
-import { handleError } from "./utils.js";
+import type { API, Logger } from "homebridge";
+import {
+  QUERY_RETRIES,
+  QUERY_TIMEOUT_MS,
+} from "./settings.js";
+import type { MiFloraData, MiFloraDevice, PlantAccessory } from "./types.js";
+import { accessoryContext, setAccessoryFault, updateAccessoryServices } from "./platformAccessory.js";
+import { handleError, TimeoutError, withTimeout } from "./utils.js";
 
-/**
- * Fetch data for all plants in parallel
- */
-export async function fetchPlantsData(
-  plants: PlantAccessory[],
-  log: Logger,
-  api: API
-): Promise<void> {
-  const promises = plants.map((plant) => updatePlantData(plant, log, api));
-  await Promise.allSettled(promises);
+interface QueryOptions {
+  retries?: number;
+  timeoutMs?: number;
+  retryDelayMs?: number;
 }
 
-/**
- * Update data for a specific plant with retry logic
- */
-async function updatePlantData(
-  plant: PlantAccessory,
-  log: Logger,
-  api: API
-): Promise<void> {
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isUncancellableTimeout(error: Error): boolean {
+  return error instanceof TimeoutError || /(?:timeout|timed out)/i.test(error.message);
+}
+
+async function readMiFloraData(device: MiFloraDevice): Promise<MiFloraData> {
+  // miflora's combined query() adds a 10-second timeout around the complete
+  // firmware + sensor sequence. Some Linux adapters legitimately take much
+  // longer to establish the first GATT connection. Calling the two public
+  // reads separately matches the library's documented usage and avoids that
+  // additional combined deadline while reusing the same connection.
+  if (device.queryFirmwareInfo && device.querySensorValues) {
+    const firmwareInfo = await device.queryFirmwareInfo(true);
+    const sensorValues = await device.querySensorValues(true);
+    return { firmwareInfo, sensorValues };
+  }
+
+  return device.query();
+}
+
+export function isMiFloraData(value: unknown): value is MiFloraData {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<MiFloraData>;
+  return (
+    typeof candidate.firmwareInfo?.firmware === "string" &&
+    isFiniteNumber(candidate.firmwareInfo.battery) &&
+    isFiniteNumber(candidate.sensorValues?.temperature) &&
+    isFiniteNumber(candidate.sensorValues.lux) &&
+    isFiniteNumber(candidate.sensorValues.moisture) &&
+    isFiniteNumber(candidate.sensorValues.fertility)
+  );
+}
+
+async function disconnect(device: MiFloraDevice | undefined, log: Logger): Promise<void> {
+  if (!device?.disconnect) {
+    return;
+  }
+
   try {
-    if (plant.device === undefined) {
-      log.info("Cached plant not found, removing from accessories");
-      api.unregisterPlatformAccessories(
-        "homebridge-xiaomi-plant-monitor",
-        "xiaomi-plant-monitor",
-        [plant.accessory]
-      );
-      return;
-    }
-
-    // Query the device for updated data
-    const queryResult = await queryPlantData(plant, log);
-
-    // Update accessory services with new data
-    updateAccessoryServices(plant, queryResult, api, log);
+    await device.disconnect();
   } catch (error) {
-    handleError(
-      log,
-      `Error updating plant data for ${plant.accessory.displayName}`,
-      error
-    );
+    handleError(log, `Could not disconnect ${device.address}`, error, "warn");
   }
 }
 
-/**
- * Query plant data with retry logic
- */
-async function queryPlantData(
+export async function queryPlantData(
   plant: PlantAccessory,
-  log: Logger
+  log: Logger,
+  options: QueryOptions = {},
 ): Promise<MiFloraData> {
   if (!plant.device) {
-    throw new Error("Device is undefined");
+    throw new Error("The Bluetooth device is not currently discoverable");
   }
 
-  let retries = 3;
-  let lastError: Error | null = null;
-  let queryResult: MiFloraData | null = null;
+  const retries = options.retries ?? QUERY_RETRIES;
+  const timeoutMs = options.timeoutMs ?? QUERY_TIMEOUT_MS;
+  const retryDelayMs = options.retryDelayMs ?? 3_000;
+  let lastError: Error | undefined;
 
-  while (retries > 0 && queryResult === null) {
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
-      log.debug(
-        `Attempting to query plant ${plant.accessory.displayName}, attempts remaining: ${retries}`
+      const result = await withTimeout(
+        readMiFloraData(plant.device),
+        timeoutMs,
+        `Query timed out after ${timeoutMs} ms`,
       );
-      queryResult = await plant.device.query();
-      break; // Success, exit the retry loop
+      if (!isMiFloraData(result)) {
+        throw new Error("The sensor returned an invalid data payload");
+      }
+      return result;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       handleError(
         log,
-        `Query attempt failed for ${plant.accessory.displayName}`,
+        `Query attempt ${attempt}/${retries} failed for ${plant.config.address}`,
         lastError,
-        "warn"
+        "warn",
       );
-      retries--;
-      if (retries > 0) {
-        // Wait before retrying (exponential backoff)
-        await new Promise((resolve) =>
-          setTimeout(resolve, (4 - retries) * 2000)
+      await disconnect(plant.device, log);
+
+      // A timed-out promise cannot be cancelled by the legacy miflora library.
+      // Retrying immediately could create concurrent operations on one adapter.
+      if (isUncancellableTimeout(lastError)) {
+        log.warn(
+          `Not retrying ${plant.config.address}; the timed-out BLE operation cannot be cancelled safely`,
         );
+        break;
       }
+
+      if (attempt === retries) {
+        break;
+      }
+
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, retryDelayMs * attempt);
+      });
     }
   }
 
-  if (queryResult === null) {
-    throw (
-      lastError || new Error("Failed to query device after multiple attempts")
-    );
+  throw lastError ?? new Error("The sensor query failed");
+}
+
+export async function disconnectPlantDevices(
+  plants: PlantAccessory[],
+  log: Logger,
+): Promise<void> {
+  await Promise.all(plants.map((plant) => disconnect(plant.device, log)));
+}
+
+async function updatePlantData(
+  plant: PlantAccessory,
+  log: Logger,
+  api: API,
+): Promise<void> {
+  const context = accessoryContext(plant);
+
+  if (!plant.device) {
+    plant.consecutiveFailures += 1;
+    context.consecutiveFailures = plant.consecutiveFailures;
+    setAccessoryFault(plant, api, true);
+    api.updatePlatformAccessories([plant.accessory]);
+    log.debug(`No Bluetooth device available for ${plant.config.address}; retaining cached values`);
+    return;
   }
 
-  return queryResult;
+  let querySucceeded = false;
+  try {
+    const data = await queryPlantData(plant, log);
+    querySucceeded = true;
+    updateAccessoryServices(plant, data, api);
+    plant.consecutiveFailures = 0;
+    context.consecutiveFailures = 0;
+    context.lastSuccessfulRead = Date.now();
+    context.lastData = data;
+
+    const { battery, firmware } = data.firmwareInfo;
+    const { temperature, lux, moisture, fertility } = data.sensorValues;
+    const fertilitySummary = plant.config.displayFertility
+      ? `, fertility ${fertility} µS/cm`
+      : "";
+    log.info(
+      `${plant.config.name}: battery ${battery}%, firmware ${firmware}, temperature ${temperature}°C, light ${lux} lux, moisture ${moisture}%${fertilitySummary}`,
+    );
+  } catch (error) {
+    plant.consecutiveFailures += 1;
+    context.consecutiveFailures = plant.consecutiveFailures;
+    setAccessoryFault(plant, api, true);
+    handleError(log, `Unable to update ${plant.config.name}; retaining cached values`, error);
+  } finally {
+    if (querySucceeded && plant.device) {
+      await disconnect(plant.device, log);
+    }
+    api.updatePlatformAccessories([plant.accessory]);
+  }
 }
 
 /**
- * Update accessory services with new plant data
+ * BLE operations are deliberately serialized. Most Homebridge installations
+ * have a single adapter and parallel GATT connections are unreliable.
  */
-function updateAccessoryServices(
-  plant: PlantAccessory,
-  queryResult: MiFloraData,
+export async function fetchPlantsData(
+  plants: PlantAccessory[],
+  log: Logger,
   api: API,
-  log: Logger
-): void {
-  const { firmwareInfo, sensorValues } = queryResult;
-  const { battery, firmware } = firmwareInfo;
-  const { temperature, lux, moisture, fertility } = sensorValues;
-
-  log.info(
-    `Plant: ${plant.accessory.displayName} | Battery: ${battery}% | Firmware: ${firmware} | Temperature: ${temperature}°C | Light: ${lux} lux | Moisture: ${moisture}% | Fertility: ${fertility} µS/cm`
-  );
-
-  // Update humidity service (moisture)
-  const humidityService = plant.accessory.getService(
-    api.hap.Service.HumiditySensor
-  );
-  if (humidityService) {
-    humidityService.updateCharacteristic(
-      api.hap.Characteristic.CurrentRelativeHumidity,
-      moisture
-    );
-    humidityService.updateCharacteristic(
-      api.hap.Characteristic.StatusLowBattery,
-      battery < plant.lowBatteryThreshold
-        ? api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-        : api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-    );
-  }
-
-  // Update battery service
-  const batteryService = plant.accessory.getService(
-    api.hap.Service.BatteryService
-  );
-  if (batteryService) {
-    batteryService.updateCharacteristic(
-      api.hap.Characteristic.ChargingState,
-      api.hap.Characteristic.ChargingState.NOT_CHARGEABLE
-    );
-    batteryService.updateCharacteristic(
-      api.hap.Characteristic.BatteryLevel,
-      battery
-    );
-    batteryService.updateCharacteristic(
-      api.hap.Characteristic.StatusLowBattery,
-      battery < plant.lowBatteryThreshold
-        ? api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-        : api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-    );
-  }
-
-  // Update temperature service if enabled
-  if (plant.displayTemperature) {
-    const temperatureService = plant.accessory.getService(
-      api.hap.Service.TemperatureSensor
-    );
-    if (temperatureService) {
-      temperatureService.updateCharacteristic(
-        api.hap.Characteristic.CurrentTemperature,
-        temperature
-      );
-      temperatureService.updateCharacteristic(
-        api.hap.Characteristic.StatusLowBattery,
-        battery < plant.lowBatteryThreshold
-          ? api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-          : api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-      );
-    }
-  }
-
-  // Update light level service if enabled
-  if (plant.displayLightLevel) {
-    const lightService = plant.accessory.getService(
-      api.hap.Service.LightSensor
-    );
-    if (lightService) {
-      lightService.updateCharacteristic(
-        api.hap.Characteristic.CurrentAmbientLightLevel,
-        lux
-      );
-      lightService.updateCharacteristic(
-        api.hap.Characteristic.StatusLowBattery,
-        battery < plant.lowBatteryThreshold
-          ? api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-          : api.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-      );
-    }
-  }
-
-  // Update fertility data (we don't have a direct HomeKit service for this)
-  // So we log it for now, but in the future could add a custom characteristic
-  if (plant.displayFertility) {
-    log.debug(
-      `Plant: ${plant.accessory.displayName} | Fertility: ${fertility} µS/cm`
-    );
-    // Future enhancement: could add a custom characteristic for fertility
+): Promise<void> {
+  for (const plant of plants) {
+    await updatePlantData(plant, log, api);
   }
 }
